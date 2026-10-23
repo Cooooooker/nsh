@@ -332,6 +332,11 @@ Things that were found the hard way. Read the section of the area you change bef
   `interactiveContentPopGestureRecognizer`, so both it and `interactivePopGestureRecognizer` need the stack's
   permission delegate after the navigation view has loaded. A scroll view's glide or bounce is not a Core
   Animation animation: `isDecelerating` says it moves, and a tap during it only stops it.
+- **Interactive back and editing**: the outgoing page remains attached while the finger moves, so removing its
+  input only ends editing after the pop. The stack's gesture delegate ends editing after the permission, root and
+  transition guards allow the gesture. `didShowViewController:` restores that editor if its page returns after
+  cancellation and no other control took focus. Rejected gestures keep focus. The regression observes `onBlur` while the
+  root's system-delivered touch is still down, rather than checking only after the page has detached.
 - **A hardware keyboard's keys are IOHID keyboard events** (`IOHIDEventCreateKeyboardEvent`, usage page 7) handed to
   UIKit the way touches are: they become presses, key commands and typing as a real keyboard's do. Modifiers are
   keys of their own (left Control, Shift, Option, Command), down before the key and up after it.
