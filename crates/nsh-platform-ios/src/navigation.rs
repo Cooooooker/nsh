@@ -705,15 +705,24 @@ impl StackHost {
         // SAFETY: the delegate lives as long as the stack.
         unsafe { nav.setDelegate(Some(ProtocolObject::from_ref(&*delegate))) };
         keep_in_window(&nav.navigationBar());
-        if let Some(pop) = nav.interactivePopGestureRecognizer() {
-            pop.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-        }
         if let Some(view) = nav.view() {
             view.setAutoresizingMask(
                 UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
             );
             view.setFrame(container.bounds());
             container.addSubview(&view);
+        }
+        // Loading the navigation view installs UIKit's gesture delegates.
+        // Apply our permission delegate afterwards, to both recognizers:
+        // on iOS 26 even an edge drag can use the content recognizer, whose
+        // default delegate prevents popping with a hidden navigation bar.
+        if let Some(pop) = nav.interactivePopGestureRecognizer() {
+            pop.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        }
+        if nav.respondsToSelector(objc2::sel!(interactiveContentPopGestureRecognizer))
+            && let Some(pop) = nav.interactiveContentPopGestureRecognizer()
+        {
+            pop.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
         }
         Self {
             container,

@@ -280,6 +280,8 @@ desktops and the web. With `headerTransparent`, `headerLargeTitle` or `headerVis
 the page on iOS and Android; use [SafeAreaView](./safe-area-view.md) or `safeAreaInsets()` to keep it clear of the
 header and the status bar.
 
+On iOS, `headerVisible={false}` keeps swipe back enabled while `popOnSwipe` and `popOnBack` are true.
+
 ```rust tabs
 nav_page()
     .title("Large title")
