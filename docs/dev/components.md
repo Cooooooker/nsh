@@ -859,7 +859,7 @@ is for, never by replacing one popup with another everywhere:
 | `Sheet` | an edge panel (`side`) over a backdrop | the same |
 
 `Sheet` opts into downward dragging with `closeOnSwipe` (default false, bottom side). Its pan updates
-`SheetMotion.y` on the platform's animation graph; a clamped fraction of the measured panel height drives both
+`SheetMotion.drag_y` on the platform's animation graph; a clamped fraction of the measured panel height drives both
 translation and backdrop opacity. Release past 30% or 800 points/second requests `onOpenChange(false, "swipe")`
 after `onCancel`; a shorter, cancelled or declined gesture returns the panel. Reduced motion snaps the release.
 `Interactive::pan_enabled` filters the mounted pan values and event mask together, retaining the listeners and
@@ -868,6 +868,12 @@ descendant scroll's pan: its initial offset consumes the first part of the drag,
 distance moves the panel while the scroll stays at its adjusted top. Other backends retain their usual scroll
 arbitration. `SheetMotion` tags completion callbacks and fallback timers with a generation, so a prior exit cannot
 unmount a reopened sheet or its backdrop.
+
+`SheetMotion` derives the programmatic translation from the remaining fade fraction times the current measured
+distance from the edge. Lazy JS children can fill in over several layout rounds in one native batch; later content
+can also resize a panel during its entrance. Each layout updates that distance in the native graph, preserving the
+animation's progress and completion time. `Sheet`, phone menus and compact dock drawers share this path. Dragging
+is a separate value in points, so entrance measurement does not clamp or replace the finger's displacement.
 
 The menus' items reach their menu through context (`MenuContext`: the close function, the sheet's path of submenus,
 the level's open submenu), so the app arranges them freely. Every item of a sheet's hidden levels is out of the tree

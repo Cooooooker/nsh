@@ -734,6 +734,7 @@ expect Life: sheet closed
 tap text:OpenSwipeSheet
 expect SwipeSheetBody
 wait 400
+frame parent:text:SwipeSheetBody 0 490 390 354
 listens parent:text:SwipeSheetBody onPanEnd
 tap below:parent:text:SwipeSheetBody
 absent SwipeSheetBody

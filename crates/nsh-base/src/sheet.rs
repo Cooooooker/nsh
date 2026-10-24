@@ -86,10 +86,13 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
     let swipe_enabled = animated_value(0.0);
     // The same native value drives the panel and scrim: finger motion
     // never waits for a Rust component turn or a JS callback.
-    let progress = motion.y.div(&height).interpolate(&[0.0, 1.0], &[0.0, 1.0]);
+    let progress = motion
+        .drag_y
+        .div(&height)
+        .interpolate(&[0.0, 1.0], &[0.0, 1.0]);
     let dragged_y = progress
         .mul(&height)
-        .sub(&motion.y)
+        .sub(&motion.drag_y)
         .mul(&swipe_enabled)
         .add(&motion.y);
     let dragged_fade = progress
@@ -146,7 +149,7 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
             })
             .child(props.children);
         panel = panel
-            .pan_values(None, Some(&motion.y))
+            .pan_values(None, Some(&motion.drag_y))
             .pan_enabled(move || swipe() && open.get() && motion.settled.get())
             .pan_scroll_handoff(swipe)
             .on_pan_end(move |e: &PanEvent| {

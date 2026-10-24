@@ -63,6 +63,9 @@ function Filters() {
 the `"bottom"` (the default) or `"top"` of the screen, as wide as the screen, or at the `"left"` or `"right"`, as tall
 as the screen; its size across is the panel's, from its content or `popupClass`.
 
+Its slide follows the panel's measured size as content is created or grows during the entrance. Lazy content and
+asynchronous size updates share the same animation progress; the panel settles at its current size.
+
 ## Open state
 
 Without `open`, the sheet keeps its own state, starting from `defaultOpen`. With `open`, the app owns it: change it in

@@ -206,3 +206,242 @@ fn a_sheet_goes_once_its_motion_ends_on_a_manual_clock() {
     app.wait_for_gone("Sheet body", std::time::Duration::from_secs(5))
         .unwrap();
 }
+
+#[derive(Clone, PartialEq, Props)]
+struct GrowingProps {
+    swipe: bool,
+    side: Placement,
+    menu: bool,
+    grow_later: bool,
+}
+
+/// The first layout contains only padding. Content fills in during the
+/// next layout round, like JS lazy children, and optionally grows later.
+#[component]
+fn GrowingScreen(props: GrowingProps) -> impl IntoElement {
+    let open = signal(false);
+    let extent = signal(px(0.0));
+    let horizontal = matches!(props.side, Placement::Left | Placement::Right);
+    let body = view()
+        .style_with(move |s| {
+            if horizontal {
+                s.w(extent.get())
+            } else {
+                s.h(extent.get())
+            }
+        })
+        .on_layout(move |_: &Bounds<Points>| {
+            if extent.get_untracked() == px(0.0) {
+                extent.set(px(300.0));
+                if props.grow_later {
+                    set_timeout(std::time::Duration::from_millis(80), move || {
+                        extent.set(px(500.0));
+                    });
+                }
+            }
+        })
+        .child(
+            view()
+                .test_id("grow-close")
+                .h(px(44.0))
+                .on_press(move || open.set(false)),
+        );
+    let panel = if props.menu {
+        nsh_base::menu()
+            .open(move || Some(open.get()))
+            .popup_style(|s| s.pt(px(8.0)).pb(px(46.0)))
+            .child(body)
+            .into_element()
+    } else {
+        sheet()
+            .open(move || Some(open.get()))
+            .side(props.side)
+            .close_on_swipe(props.swipe)
+            .popup_style(move |s| {
+                if horizontal {
+                    s.pl(px(8.0)).pr(px(46.0))
+                } else {
+                    s.pt(px(8.0)).pb(px(46.0))
+                }
+            })
+            .child(body)
+            .into_element()
+    };
+    view()
+        .child(
+            view()
+                .test_id("grow-open")
+                .w(px(44.0))
+                .h(px(44.0))
+                .on_press(move || {
+                    extent.set(px(0.0));
+                    open.set(true);
+                }),
+        )
+        .child(panel)
+}
+
+#[derive(Debug)]
+struct Presented {
+    extent: f32,
+    translation: f32,
+    fraction: f32,
+}
+
+type Presentations = std::sync::Arc<std::sync::Mutex<Vec<Presented>>>;
+
+/// Replay the platform's complete native batches, including derived
+/// animation bindings. No display tick occurs in the middle of a batch.
+fn observe_entrance(
+    app: &mut Headless,
+    side: Placement,
+    menu: bool,
+    advance: bool,
+) -> Presentations {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+    };
+
+    use nsh_core::{
+        MountItem,
+        animation::{AnimationProp, Graph},
+    };
+
+    let horizontal = matches!(side, Placement::Left | Placement::Right);
+    let index = if horizontal || menu { 0 } else { 1 };
+    let sign = if matches!(side, Placement::Left | Placement::Top) {
+        -1.0
+    } else {
+        1.0
+    };
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let result = seen.clone();
+    let mut graph = Graph::default();
+    let mut bindings = HashMap::new();
+    let mut finished = Vec::new();
+    let mut fraction = 1.0;
+    let mut advanced = false;
+    app.observe(move |_, batch| {
+        let mut frames = Vec::new();
+        for item in &batch.items {
+            match item {
+                MountItem::Animation(op) => graph.apply(op.clone(), &mut finished),
+                MountItem::AnimationBindings {
+                    id,
+                    bindings: values,
+                } => {
+                    for (prop, node) in values {
+                        if *prop == AnimationProp::Transform(index) {
+                            bindings.insert(*id, *node);
+                        }
+                    }
+                }
+                MountItem::Frame { id, frame } => {
+                    let extent = if horizontal {
+                        frame.size.width.0
+                    } else {
+                        frame.size.height.0
+                    };
+                    frames.push((*id, extent));
+                }
+                _ => {}
+            }
+        }
+        if let Some((node, extent)) = frames
+            .into_iter()
+            .rev()
+            .find_map(|(id, extent)| bindings.get(&id).map(|n| (*n, extent)))
+        {
+            seen.lock().unwrap().push(Presented {
+                extent,
+                translation: sign * graph.eval(node).number(),
+                fraction,
+            });
+            if advance && !advanced {
+                graph.tick(0.0, &mut finished);
+                graph.tick(0.08, &mut finished);
+                fraction = sign * graph.eval(node).number() / extent;
+                advanced = true;
+            }
+        }
+    });
+    result
+}
+
+fn growing_app(props: GrowingProps) -> Headless {
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::new::<GrowingScreen>(move || props.clone()))
+    };
+    config.environment.os = nsh_core::platform::Os::Ios;
+    config.environment.idiom = nsh_core::platform::Idiom::Phone;
+    Headless::start(config).unwrap()
+}
+
+#[test]
+fn an_entrance_uses_the_complete_height_in_its_first_native_batch() {
+    for (side, menu) in [
+        (Placement::Bottom, false),
+        (Placement::Top, false),
+        (Placement::Left, false),
+        (Placement::Right, false),
+        (Placement::Bottom, true),
+    ] {
+        for swipe in [false, true] {
+            let mut app = growing_app(GrowingProps {
+                swipe,
+                side,
+                menu,
+                grow_later: false,
+            });
+            let starts = observe_entrance(&mut app, side, menu, false);
+            app.first_render().unwrap();
+            for opening in 0..2 {
+                app.press("id:grow-open").unwrap();
+                app.wait(std::time::Duration::from_millis(350)).unwrap();
+                let starts = starts.lock().unwrap();
+                assert_eq!(
+                    starts.len(),
+                    opening + 1,
+                    "side={side:?}, menu={menu}, swipe={swipe}: {starts:?}"
+                );
+                assert!(
+                    (starts[opening].translation - 354.0).abs() < 0.01,
+                    "side={side:?}, menu={menu}, swipe={swipe}, opening={opening}: {starts:?}"
+                );
+                drop(starts);
+                app.press("id:grow-close").unwrap();
+                app.wait(std::time::Duration::from_millis(250)).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn asynchronous_growth_preserves_the_native_entrance_fraction() {
+    for menu in [false, true] {
+        let mut app = growing_app(GrowingProps {
+            swipe: true,
+            side: Placement::Bottom,
+            menu,
+            grow_later: true,
+        });
+        let samples = observe_entrance(&mut app, Placement::Bottom, menu, true);
+        app.first_render().unwrap();
+        app.press("id:grow-open").unwrap();
+        app.wait(std::time::Duration::from_millis(400)).unwrap();
+        let samples = samples.lock().unwrap();
+        let grown = samples
+            .iter()
+            .find(|s| s.extent == 554.0)
+            .unwrap_or_else(|| {
+                panic!("menu={menu}: the later content was not laid out: {samples:?}")
+            });
+        assert!(grown.fraction > 0.0 && grown.fraction < 1.0);
+        assert!(
+            (grown.translation / grown.extent - grown.fraction).abs() < 0.001,
+            "menu={menu}: growth restarted or lost the entrance fraction: {samples:?}"
+        );
+    }
+}

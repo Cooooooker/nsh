@@ -150,8 +150,8 @@ function App() {
         <Text>SheetBody</Text>
       </Sheet>
       <View onPress={() => swipeSheet.set(true)}><Text>OpenSwipeSheet</Text></View>
-      <Sheet open={swipeSheet()} closeOnSwipe onOpenChange={(next) => swipeSheet.set(next)} popupStyle={{ height: 200 }}>
-        <Text>SwipeSheetBody</Text>
+      <Sheet open={swipeSheet()} closeOnSwipe onOpenChange={(next) => swipeSheet.set(next)} popupStyle={{ paddingTop: 54 }}>
+        <Text style={{ height: 300 }}>SwipeSheetBody</Text>
       </Sheet>
       <Sheet defaultOpen closeOnBackdropPress={false} popupStyle={{ height: 20 }}>
         <Text>StuckSheet</Text>

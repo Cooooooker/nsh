@@ -59,6 +59,8 @@ function Filters() {
 
 `Sheet` 来自 [`nsh/base`](../modules/nsh-base.md)。它的内容在每次打开时创建。`side` 把它放在屏幕的 `"bottom"`（默认）或 `"top"`，宽度与屏幕相同；或放在 `"left"` 或 `"right"`，高度与屏幕相同；它另一个方向的尺寸由面板决定，来自其内容或 `popupClass`。
 
+入场滑动距离会跟随面板的实际测量尺寸。内容在入场期间延迟创建或异步增高时，面板沿用当前动画进度，并按更新后的尺寸滑入到位。
+
 <a id="open-state"></a>
 
 ## 打开状态
