@@ -445,3 +445,78 @@ fn asynchronous_growth_preserves_the_native_entrance_fraction() {
         );
     }
 }
+
+#[test]
+fn a_long_swipe_exit_keeps_fading_the_backdrop() {
+    use std::sync::{Arc, Mutex};
+
+    use nsh_core::{
+        EventKind, EventPayload, MountItem,
+        animation::{AnimationProp, Graph},
+    };
+
+    let mut app = Headless::start(EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::of::<SwipeScreen>())
+    })
+    .unwrap();
+    let native = Arc::new(Mutex::new((Graph::default(), None, None)));
+    let observed = native.clone();
+    app.observe(move |_, batch| {
+        let mut native = observed.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::Animation(op) => native.0.apply(op.clone(), &mut Vec::new()),
+                MountItem::Gestures { id, values } if values.pan_y.is_some() => {
+                    native.1 = Some((*id, values.pan_y.unwrap()));
+                }
+                MountItem::AnimationBindings { bindings, .. } => {
+                    for (prop, node) in bindings {
+                        if *prop == AnimationProp::Opacity {
+                            native.2 = Some(*node);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    app.wait(std::time::Duration::from_millis(400)).unwrap();
+    let (panel, opacity) = {
+        let mut native = native.lock().unwrap();
+        native.0.tick(0.0, &mut Vec::new());
+        native.0.tick(1.0, &mut Vec::new());
+        let (panel, pan) = native.1.expect("the settled sheet mounts native dragging");
+        let opacity = native.2.expect("the backdrop binds native opacity");
+        native.0.set(pan, 200.0, &mut Vec::new());
+        assert!((native.0.eval(opacity).number() - 60.0 / 260.0).abs() < 0.001);
+        (panel, opacity)
+    };
+    app.engine().control().dispatch_event(
+        panel,
+        EventKind::PanEnd,
+        EventPayload::Pan {
+            translation: point(px(0.0), px(200.0)),
+            velocity_x: 0.0,
+            velocity_y: 0.0,
+            value_x: None,
+            value_y: Some(px(200.0)),
+        },
+    );
+    app.wait(std::time::Duration::from_millis(20)).unwrap();
+    let mut native = native.lock().unwrap();
+    let mut before = native.0.eval(opacity).number();
+    for frame in 0..=20 {
+        native
+            .0
+            .tick(1.0 + f64::from(frame) / 100.0, &mut Vec::new());
+        let after = native.0.eval(opacity).number();
+        assert!(
+            after <= before + 0.0001,
+            "the backdrop darkened: {before} -> {after}"
+        );
+        before = after;
+    }
+    assert!(before < 0.001, "the exit finishes transparent: {before}");
+}

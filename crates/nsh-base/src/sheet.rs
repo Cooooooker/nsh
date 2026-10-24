@@ -95,10 +95,12 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
         .sub(&motion.drag_y)
         .mul(&swipe_enabled)
         .add(&motion.y);
-    let dragged_fade = progress
-        .mul(&swipe_enabled)
-        .interpolate(&[0.0, 1.0], &[1.0, 0.0])
-        .mul(&motion.fade);
+    // During exit both fade and drag return to zero. Subtracting keeps
+    // the backdrop fading forward from the finger's release position.
+    let dragged_fade = motion
+        .fade
+        .sub(&progress.mul(&swipe_enabled))
+        .interpolate(&[0.0, 1.0], &[0.0, 1.0]);
     let swipe = move || props.close_on_swipe.get() && props.side.get() == Placement::Bottom;
     let was_swipe = stored(false);
     effect(move || {
