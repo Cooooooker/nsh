@@ -95,6 +95,7 @@ covers [events] onSubmit
 covers [events] onSelectionChange
 covers [events] onCaretMove
 # What the user pasted, reported; the input inserts nothing itself.
+prop id:paste pasteBehavior report
 expect Pasted: none
 event id:paste onPaste text=hello
 expect Pasted: hello files 0 uris 0
