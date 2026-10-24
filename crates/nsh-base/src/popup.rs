@@ -24,6 +24,8 @@ pub enum OpenChangeReason {
     PressOutside,
     /// Its backdrop was pressed (a sheet's).
     BackdropPress,
+    /// A sheet was swiped toward its edge.
+    Swipe,
     /// Escape or the Android back button.
     Cancel,
     /// An item was chosen (a menu's).
@@ -127,6 +129,8 @@ pub(crate) struct SheetMotion {
     closing: Stored<bool>,
     /// The panel stays mounted while closed ([`Self::keeping_panel`]).
     kept: Stored<bool>,
+    /// Stale animation ends and fallback timers cannot finish a newer motion.
+    generation: Stored<u64>,
 }
 
 impl SheetMotion {
@@ -146,6 +150,7 @@ impl SheetMotion {
             panel: stored(None),
             closing: stored(false),
             kept: stored(false),
+            generation: stored(0),
         };
         effect(move || {
             let open = open();
@@ -192,6 +197,7 @@ impl SheetMotion {
             self.y.set(y);
             self.entering.replace(true);
         } else if self.shown.get_untracked() && !self.closing.with(|c| *c) {
+            let generation = self.next_motion();
             self.entering.replace(false);
             if reduce_motion() {
                 self.settled.set(false);
@@ -210,7 +216,7 @@ impl SheetMotion {
             // its end, whatever clock the app's timers follow (a test's
             // manual one moves only as the test says).
             spawn(async move {
-                if end.await && closing.replace(false) {
+                if end.await && self.generation.get() == generation && closing.replace(false) {
                     shown.set(false);
                 }
             });
@@ -219,7 +225,7 @@ impl SheetMotion {
             set_timeout(
                 std::time::Duration::from_millis(SHEET_OUT_MS as u64),
                 move || {
-                    if closing.replace(false) {
+                    if self.generation.get() == generation && closing.replace(false) {
                         shown.set(false);
                     }
                 },
@@ -252,7 +258,8 @@ impl SheetMotion {
 
     /// From where it is to its place, the backdrop to opaque; settled once
     /// it is there.
-    fn come_in(self) {
+    pub(crate) fn come_in(self) {
+        let generation = self.next_motion();
         if reduce_motion() {
             self.x.set(0.0);
             self.y.set(0.0);
@@ -266,18 +273,24 @@ impl SheetMotion {
         let (settled, closing) = (self.settled, self.closing);
         // There when the motion ends, or after its time (as it goes).
         spawn(async move {
-            if end.await && !closing.with(|c| *c) {
+            if end.await && self.generation.get() == generation && !closing.with(|c| *c) {
                 settled.set(true);
             }
         });
         set_timeout(
             std::time::Duration::from_millis(SHEET_IN_MS as u64),
             move || {
-                if !closing.with(|c| *c) {
+                if self.generation.get() == generation && !closing.with(|c| *c) {
                     settled.set(true);
                 }
             },
         );
+    }
+
+    fn next_motion(self) -> u64 {
+        let next = self.generation.get().wrapping_add(1);
+        self.generation.replace(next);
+        next
     }
 }
 
