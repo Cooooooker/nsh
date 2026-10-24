@@ -23,6 +23,7 @@ pub const NATIVE_MODULES: &[&str] = &[
     "nsh/android",
     "nsh/ios",
     "nsh/desktop",
+    "nsh/mobile",
     "nsh/webview",
     "nsh/video",
     "nsh/native",
@@ -31,6 +32,7 @@ pub const NATIVE_MODULES: &[&str] = &[
     "nsh/canvas",
     "nsh/list",
     "nsh/image",
+    "nsh/host",
     "nsh/keymap",
 ];
 
@@ -149,6 +151,7 @@ mod tests {
                 "VideoHostProps",
                 "  onLoad?: (e: { duration: number; size: Size }) => void;",
             ),
+            ("VideoHostProps", "  audioSession?: AudioSession;"),
             (
                 "ScrollingHostProps",
                 "  decelerationRate?: \"normal\" | \"fast\" | number;",

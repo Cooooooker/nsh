@@ -14,7 +14,7 @@ use nsh_engine::{
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Retained, Weak},
-    runtime::ProtocolObject,
+    runtime::{AnyObject, ProtocolObject},
 };
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::{
@@ -23,9 +23,10 @@ use objc2_foundation::{
 };
 use objc2_ui_kit::{
     NSValueUIGeometryExtensions, UIDevice, UIFont, UIFontTextStyleBody,
-    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
-    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIResponder,
-    UITraitCollection, UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
+    UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
+    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
+    UIKeyboardWillHideNotification, UIResponder, UITraitCollection, UITraitEnvironment,
+    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
 };
 
 use crate::{
@@ -125,6 +126,8 @@ pub(crate) struct RootViewIvars {
     /// The embedding app's locale and text size over the system's
     /// ([`Surface::set_host_environment`]).
     host: Cell<nsh_engine::HostEnvironment>,
+    /// The embedding app's theme overrides ([`Surface::set_host_tokens`]).
+    host_tokens: RefCell<Option<nsh_engine::Tokens>>,
     /// Keyboard notification registrations.
     observers: RefCell<Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>>,
     #[cfg(feature = "dev")]
@@ -213,6 +216,42 @@ define_class!(
                 }
             });
         }
+
+        /// Hardware keys no responder inside handled: the app's shortcuts
+        /// (`nsh/keymap`) take those they bind.
+        #[unsafe(method(pressesBegan:withEvent:))]
+        fn presses_began(&self, presses: &AnyObject, event: Option<&AnyObject>) {
+            let consumed = self
+                .target()
+                .is_some_and(|target| crate::keymap::root_began(&target, presses));
+            if !consumed {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), pressesBegan: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesEnded:withEvent:))]
+        fn presses_ended(&self, presses: &AnyObject, event: Option<&AnyObject>) {
+            let consumed = self
+                .target()
+                .is_some_and(|target| crate::keymap::ended(&target, presses));
+            if !consumed {
+                // SAFETY: calling the superclass implementation.
+                let _: () = unsafe { msg_send![super(self), pressesEnded: presses, withEvent: event] };
+            }
+        }
+
+        #[unsafe(method(pressesCancelled:withEvent:))]
+        fn presses_cancelled(&self, presses: &AnyObject, event: Option<&AnyObject>) {
+            let consumed = self
+                .target()
+                .is_some_and(|target| crate::keymap::ended(&target, presses));
+            if !consumed {
+                // SAFETY: calling the superclass implementation.
+                let _: () =
+                    unsafe { msg_send![super(self), pressesCancelled: presses, withEvent: event] };
+            }
+        }
     }
 );
 
@@ -233,12 +272,25 @@ impl RootView {
             keyboard: Cell::new((0.0, 0.25)),
             environment: Cell::new(None),
             host: Cell::default(),
+            host_tokens: RefCell::new(None),
             observers: RefCell::new(Vec::new()),
             #[cfg(feature = "dev")]
             test_model: TestModel::default(),
         });
         // SAFETY: UIView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+
+    /// The running app's event target.
+    fn target(&self) -> Option<Retained<crate::target::EventTarget>> {
+        let running = self.ivars().running.borrow();
+        let mounter = running
+            .as_ref()?
+            .mounter
+            .get(self.mtm())
+            .try_borrow()
+            .ok()?;
+        mounter.as_ref().map(|m| m.target().clone())
     }
 
     /// What JS sees through `windowSize()`, `safeArea()`, `keyboard()`...
@@ -289,6 +341,9 @@ impl RootView {
             locale: current_locale(),
             // Only read for the web: iOS keys are always Apple's.
             apple_keyboard: true,
+            // No host answers `nsh/host` here: an embedding app talks to its
+            // apps through its own UI sets (`nsh/native`).
+            host: false,
         };
         // The embedding app's settings over the system's.
         self.ivars().host.get().apply(&mut env);
@@ -366,10 +421,13 @@ impl RootView {
     }
 
     fn keyboard_changed(&self, note: &NSNotification) {
+        // The keyboard starts to move now, in the transaction posting this.
+        let start = objc2_quartz_core::CACurrentMediaTime();
         let Some(info) = note.userInfo() else { return };
         // SAFETY: UIKit documents these user info keys and their value types
-        // (NSValue of a CGRect in screen coordinates, NSNumber of seconds).
-        let (frame, duration) = unsafe {
+        // (NSValue of a CGRect in screen coordinates, NSNumber of seconds,
+        // NSNumber of a UIViewAnimationCurve).
+        let (frame, duration, curve) = unsafe {
             let frame = info
                 .objectForKey(UIKeyboardFrameEndUserInfoKey)
                 .and_then(|v| v.downcast::<NSValue>().ok())
@@ -378,7 +436,11 @@ impl RootView {
                 .objectForKey(UIKeyboardAnimationDurationUserInfoKey)
                 .and_then(|v| v.downcast::<NSNumber>().ok())
                 .map_or(0.25, |n| n.doubleValue());
-            (frame, duration)
+            let curve = info
+                .objectForKey(UIKeyboardAnimationCurveUserInfoKey)
+                .and_then(|v| v.downcast::<NSNumber>().ok())
+                .map_or(7, |n| n.integerValue());
+            (frame, duration, curve)
         };
         let hiding = note.name().isEqualToString(
             // SAFETY: an immutable UIKit constant.
@@ -413,12 +475,17 @@ impl RootView {
             return;
         };
         let height = height as f32;
+        let motion = crate::mount::KeyboardMotion {
+            curve,
+            duration,
+            start,
+        };
         // Focusing an input while a batch is applied can post this
         // synchronously: then run it on the next main-queue turn.
         let busy = match mounter.get(self.mtm()).try_borrow_mut() {
             Ok(mut m) => {
                 if let Some(m) = m.as_mut() {
-                    m.keyboard_changed(height, duration);
+                    m.keyboard_changed(height, motion);
                 }
                 false
             }
@@ -428,7 +495,7 @@ impl RootView {
             DispatchQueue::main().exec_async(move || {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(m) = mounter.get(mtm).borrow_mut().as_mut() {
-                    m.keyboard_changed(height, duration);
+                    m.keyboard_changed(height, motion);
                 }
             });
         }
@@ -464,6 +531,7 @@ impl RootView {
             ui_sets: crate::ui_sets(),
             runtime: None,
             data_dir: self.ivars().options.data_dir.clone(),
+            cache: system_cache(self.ivars().options.cache.clone()),
             storage: self.ivars().options.storage.as_ref().map(|dir| {
                 nsh_engine::FileStorage::open(dir) as Arc<dyn nsh_engine::StorageBackend>
             }),
@@ -471,6 +539,8 @@ impl RootView {
             context: Default::default(),
             pinned: Default::default(),
             clipboard: None,
+            host: self.ivars().options.host.clone(),
+            picker: None,
         };
         // A test session's app: the test's storage, network and trace.
         #[cfg(feature = "dev")]
@@ -489,7 +559,13 @@ impl RootView {
             #[cfg(feature = "dev")]
             test_model: self.ivars().test_model.clone(),
         };
-        let engine = match Engine::start(config, CoreTextEngine::default, sink) {
+        // The embedding app's theme overrides are in the first frame.
+        let tokens = self.ivars().host_tokens.borrow().clone();
+        let engine = match Engine::start_with(config, CoreTextEngine::default, sink, |control| {
+            if tokens.is_some() {
+                control.set_tokens(tokens);
+            }
+        }) {
             Ok(engine) => engine,
             Err(err) => return log::error!("failed to start the engine: {err}"),
         };
@@ -507,7 +583,7 @@ impl RootView {
         // mounter is installed here.
         let root = Retained::into_super(self.retain());
         let asset_base = self.ivars().options.asset_base.clone();
-        *mounter.get(mtm).borrow_mut() = Some(Mounter::new(
+        let mut installed = Mounter::new(
             mtm,
             root,
             engine.control(),
@@ -515,7 +591,10 @@ impl RootView {
             asset_base,
             access,
             self.ivars().options.components.clone(),
-        ));
+        );
+        // The app's downloaded images go through its disk cache.
+        installed.set_image_cache(engine.image_cache());
+        *mounter.get(mtm).borrow_mut() = Some(installed);
         *self.ivars().running.borrow_mut() = Some(Running { engine, mounter });
         self.ivars().environment.set(Some(self.environment()));
     }
@@ -565,8 +644,17 @@ pub struct SurfaceOptions {
     /// (`storage.json` in it), overriding their own in
     /// [`SurfaceOptions::data_dir`]; `None`: theirs.
     pub storage: Option<std::path::PathBuf>,
+    /// Where the apps keep their caches (the images they downloaded) and
+    /// how much each keeps: by default `nsh` in the app's Caches
+    /// ([`nsh_engine::CacheLocation::System`]), each app in
+    /// `<dir>/<app id>`.
+    pub cache: nsh_engine::CacheOptions,
     /// The native components the apps can use (`nsh/native`).
     pub components: crate::component::Components,
+    /// The embedding app's channel with the apps (`nsh/host`): launch
+    /// parameters, events and handlers of their calls and posts, one for
+    /// every app the surface runs.
+    pub host: nsh_engine::HostChannel,
 }
 
 impl Default for SurfaceOptions {
@@ -578,7 +666,9 @@ impl Default for SurfaceOptions {
             granted: None,
             data_dir: data_dir(),
             storage: None,
+            cache: nsh_engine::CacheOptions::default(),
             components: crate::component::Components::default(),
+            host: nsh_engine::HostChannel::default(),
         }
     }
 }
@@ -588,6 +678,21 @@ impl Default for SurfaceOptions {
 /// its id.
 fn data_dir() -> Option<std::path::PathBuf> {
     nsh_engine::data_dir().map(|dir| dir.join("nsh"))
+}
+
+/// `cache` with [`nsh_engine::CacheLocation::System`] made iOS's: `nsh` in
+/// the (embedding or standalone) app's Caches, as its data is in its
+/// Application Support.
+fn system_cache(mut cache: nsh_engine::CacheOptions) -> nsh_engine::CacheOptions {
+    if cache.location == nsh_engine::CacheLocation::System {
+        cache.location = match std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            Some(home) => nsh_engine::CacheLocation::Dir(
+                std::path::PathBuf::from(home).join("Library/Caches/nsh"),
+            ),
+            None => nsh_engine::CacheLocation::Off,
+        };
+    }
+    cache
 }
 
 /// One running nsh app hosted in a `UIView`.
@@ -684,6 +789,17 @@ impl Surface {
     pub fn set_host_environment(&self, host: nsh_engine::HostEnvironment) {
         self.view.ivars().host.set(host);
         self.view.publish_environment();
+    }
+
+    /// The embedding app's theme overrides (`nsh_base::theme_overrides`),
+    /// which win over the app's tokens of the same names (`None`: the
+    /// app's own again): sent to the running app at once, and to every app
+    /// started later before its first frame.
+    pub fn set_host_tokens(&self, tokens: Option<nsh_engine::Tokens>) {
+        *self.view.ivars().host_tokens.borrow_mut() = tokens.clone();
+        if let Some(running) = &*self.view.ivars().running.borrow() {
+            running.engine.control().set_tokens(tokens);
+        }
     }
 
     /// Replaces the running app with `app` (state is reset).

@@ -2951,8 +2951,11 @@ name = "nsh-core"
 version = "0.2.0"
 dependencies = [
  "cap-std",
+ "crc32fast",
  "flate2",
  "futures-util",
+ "httpdate",
+ "imagesize 0.15.0",
  "libc",
  "log",
  "nsh-macros",
@@ -3259,6 +3262,7 @@ dependencies = [
  "nsh-dev",
  "nsh-engine",
  "nsh-js",
+ "quickjs-jit",
  "regex",
  "serde",
  "serde_json",

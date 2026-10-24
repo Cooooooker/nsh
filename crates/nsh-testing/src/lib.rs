@@ -39,6 +39,8 @@ pub mod menu;
 #[cfg(feature = "js")]
 mod module;
 #[cfg(feature = "js")]
+mod page_host;
+#[cfg(feature = "js")]
 mod run;
 #[cfg(feature = "js")]
 mod runner;
@@ -72,7 +74,7 @@ pub use self::{
     driver::Host,
     module::{
         App, ClockOptions, ColorScheme, Entries, Expectation, NetworkOption, OpenOptions, Platform,
-        RouteOption, SPECIFIER, SafeArea, StubRequest, Testing, registry,
+        RouteOption, SPECIFIER, SafeArea, SpanStyle, StubRequest, Testing, registry,
     },
     run::{
         Built, Compile, Entry, Failure, HostOptions, Output, StartHost, TestResult, TestRun,

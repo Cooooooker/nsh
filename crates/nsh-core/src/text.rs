@@ -282,6 +282,9 @@ pub struct AttributedText {
     pub shadow: Option<TextShadow>,
     /// Nested `<text>` spans that take presses (they may nest).
     pub links: Vec<TextLink>,
+    /// Nested `<Text>` spans with a `testID` (they may nest). Platforms
+    /// draw nothing from them. Tests name a span by its id.
+    pub test_ids: Vec<SpanTestId>,
     /// `writingDirection`: right to left (`Some(true)`), left to right, or
     /// from the content (`None`).
     pub writing_direction: Option<bool>,
@@ -451,6 +454,18 @@ pub struct TextLink {
     pub events: EventMask,
 }
 
+/// A nested `<Text>` span with a `testID` ([`AttributedText::test_ids`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct SpanTestId {
+    /// Start offset (UTF-16 units, inclusive).
+    pub start: u32,
+    /// End offset (UTF-16 units, exclusive).
+    pub end: u32,
+    /// Its `testID`.
+    pub test_id: Arc<str>,
+}
+
 impl AttributedText {
     /// Whether the text was made selectable (`selectable`, `select-text`).
     pub fn is_selectable(&self) -> bool {
@@ -518,6 +533,40 @@ impl AttributedText {
                 });
             }
         }
+    }
+
+    /// Equality of the content the platform draws, excluding test metadata.
+    pub(crate) fn rendering_eq(&self, other: &Self) -> bool {
+        // Enumerating the fields makes additions revisit this comparison.
+        let Self {
+            text,
+            spans,
+            align,
+            max_lines,
+            ellipsize,
+            no_wrap,
+            shadow,
+            links,
+            writing_direction,
+            rtl,
+            selectable,
+            selection_color,
+            attachments,
+            test_ids: _,
+        } = self;
+        text == &other.text
+            && spans == &other.spans
+            && align == &other.align
+            && max_lines == &other.max_lines
+            && ellipsize == &other.ellipsize
+            && no_wrap == &other.no_wrap
+            && shadow == &other.shadow
+            && links == &other.links
+            && writing_direction == &other.writing_direction
+            && rtl == &other.rtl
+            && selectable == &other.selectable
+            && selection_color == &other.selection_color
+            && attachments == &other.attachments
     }
 
     /// True if both texts lay out identically: same characters, runs,
@@ -770,13 +819,28 @@ impl TextEngine for ApproxTextEngine {
                 ))
             })
             .collect();
-        TextLayout(Arc::new((size, points)))
+        // Baseline at the bottom of the line: the ascent is the line and
+        // the descent is 0, the same extent attachments are placed against.
+        let metrics = TextLine {
+            width: size.width,
+            height: line,
+            ascender: line,
+            x_height: *font * 0.5,
+            ..TextLine::default()
+        };
+        TextLayout(Arc::new((size, points, metrics)))
+    }
+
+    fn lines(&self, layout: &TextLayout) -> Vec<TextLine> {
+        layout
+            .downcast::<(Size<Points>, Vec<Option<Point<Points>>>, TextLine)>()
+            .map_or_else(Vec::new, |(_, _, line)| vec![line.clone()])
     }
 
     fn attachments(&self, layout: &TextLayout) -> Vec<Option<Point<Points>>> {
         layout
-            .downcast::<(Size<Points>, Vec<Option<Point<Points>>>)>()
-            .map_or_else(Vec::new, |(_, p)| p.clone())
+            .downcast::<(Size<Points>, Vec<Option<Point<Points>>>, TextLine)>()
+            .map_or_else(Vec::new, |(_, p, _)| p.clone())
     }
 
     fn register_font(&self, _: &[u8]) -> Result<(), String> {
