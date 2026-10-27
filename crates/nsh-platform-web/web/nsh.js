@@ -15,8 +15,11 @@
 // instance of its own), `assetBase` (where `asset:/<path>` is served) or
 // `assets` (a map from `<path>` to its URL, as `nsh package --target web`
 // writes it), `readAsset(uri)` (the bytes of an asset the engine needs at
-// once, a font: a `Uint8Array` or null), `chunks` / `chunkBase` (see
-// `run`), `prepareChunk(id)` (a promise for what chunk `id` needs once it
+// once, a font: a `Uint8Array` or null), `data` (the URLs of the files the
+// runtime fetches when it first needs them, by name, as `nsh package
+// --target web` writes them: `{ syntaxes: "nsh-syntaxes.<digest>.bin" }`;
+// by default `nsh-<name>.bin` next to this file), `chunks` / `chunkBase`
+// (see `run`), `prepareChunk(id)` (a promise for what chunk `id` needs once it
 // runs, such as fonts for `readAsset`; awaited with the chunk's download),
 // `dark`, `idiom` ("phone", "pad" or "desktop" instead of the one the
 // pointer and the viewport suggest), `overlay` (false: no error box),
@@ -787,6 +790,7 @@ class Player {
         websocket_buffered: (id) => this.websockets.get(id)?.bufferedAmount ?? 0,
         websocket_cancel: (id) => this.websocketCancel(id),
         load_chunk: (p, l) => this.loadChunk(this.str(p, l)),
+        load_data: (p, l) => this.loadData(this.str(p, l)),
         // The app's storage (`nsh/storage`): the entries of `localStorage`
         // under the app's prefix. 1 when done, 0 when the browser refused
         // (the error handed over with `nsh_storage_reply`).
@@ -844,9 +848,14 @@ class Player {
         throw new Error(`nsh.wasm called ${name}.${field}, which the web runtime does not provide`);
       };
     }
+    if (WebAssembly.Module.imports(module).some(entry => entry.module === "nsh_browser")) {
+      const { createBrowserHost } = await import("./browser/runtime.js");
+      this.browserHost = createBrowserHost(this);
+      imports.nsh_browser = this.browserHost.imports;
+    }
     imports.__wbindgen_placeholder__ && (imports.__wbindgen_placeholder__.__wbindgen_describe = () => {});
     const instance = await WebAssembly.instantiate(module, imports);
-    this.wasm = instance.exports;
+    this.wasm = this.browserHost ? this.browserHost.bind(instance.exports) : instance.exports;
     // The glue's own setup (its view of the memory, wasm-bindgen's tables)
     // before any of the app's code runs.
     glue?.__nsh_finalize(instance, module);
@@ -1121,6 +1130,12 @@ class Player {
     });
   }
 
+  /** Runs a trusted standalone app with the browser ES module loader. */
+  runModule(entry, options) {
+    if (!this.browserHost) throw new Error("this runtime has no browser JavaScript host");
+    return this.browserHost.run(entry, options);
+  }
+
   /**
    * Runs the Rust app the module was built for (an app's runtime with
    * `nsh.json` `"root"`): its root component, with no bundle and no JS of
@@ -1158,7 +1173,7 @@ class Player {
   }
 
   /** Starts the app with `start(environment)`, which returns the pump delay. */
-  begin(width, start) {
+  begin(width, start, deferEvents = false) {
     this.idiom = this.options.idiom ?? this.measureIdiom(width);
     const environment = (this.reported = JSON.stringify(this.environment()));
     this.updateRootClasses();
@@ -1177,6 +1192,11 @@ class Player {
     } finally {
       this.starting = false;
     }
+    if (!deferEvents) this.startedApp();
+  }
+
+  /** Delivers queued host events after the app installs its listeners. */
+  startedApp() {
     this.started = true;
     const events = this.hostEvents;
     this.hostEvents = [];
@@ -1204,6 +1224,26 @@ class Player {
     // A chunk of an app that was replaced meanwhile is dropped.
     if (app !== this.app) return;
     this.call((w) => this.withStrings([id, code], (ip, il, cp, cl) => w.nsh_chunk(ip, il, cp, cl, ok)));
+  }
+
+  /**
+   * Fetches the runtime's data `name` (`nsh-<name>.bin`, or the URL
+   * `data[name]` names) and hands it to the engine; a file that is missing
+   * or does not load is handed over as none (the code it would highlight
+   * stays plain).
+   */
+  async loadData(name) {
+    const url = this.options.data?.[name] ?? new URL(`nsh-${name}.bin`, import.meta.url);
+    let bytes = null;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`.trim());
+      bytes = new Uint8Array(await response.arrayBuffer());
+    } catch (err) {
+      console.warn("[nsh]", `${err.message ?? err} (${url})`);
+    }
+    const data = bytes ?? new Uint8Array(0);
+    this.call((w) => this.withStrings([name, data], (np, nl, dp, dl) => w.nsh_data(np, nl, dp, dl, bytes ? 1 : 0)));
   }
 
   /**
@@ -1242,6 +1282,9 @@ class Player {
   }
 
   stop() {
+    if (this.stopping) return;
+    this.stopping = true;
+    try {
     // Host events wait for the next app (`begin`).
     this.started = false;
     this.hostEvents ??= [];
@@ -1251,7 +1294,9 @@ class Player {
     clearTimeout(this.timer);
     cancelAnimationFrame(this.frame);
     this.frame = 0;
+    this.browserHost?.stop();
     this.wasm?.nsh_stop();
+    } finally { this.stopping = false; }
   }
 
   /**
