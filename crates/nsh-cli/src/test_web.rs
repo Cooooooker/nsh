@@ -16,6 +16,7 @@ use std::{
 use nsh_core::{
     NodeId,
     geometry::{Bounds, Point, Points, Size, point},
+    keymap::shifted,
 };
 use nsh_dev::{
     DevServer,
@@ -205,7 +206,7 @@ fn dom_key(key: nsh_core::keymap::Key, shift: bool) -> Option<(String, String)> 
                 '\'' => "Quote".into(),
                 _ => return None,
             };
-            let typed = if shift { c.to_ascii_uppercase() } else { c };
+            let typed = if shift { shifted(c) } else { c };
             Some((typed.to_string(), code))
         }
     }
@@ -392,8 +393,8 @@ impl Native for WebNative {
         if !(m.ctrl || m.alt || m.cmd)
             && let nsh_core::keymap::Key::Char(c) = stroke.key
         {
-            // A character's key types it.
-            let typed = if m.shift { c.to_ascii_uppercase() } else { c };
+            // A character's key types it (Shift+8 a `*`).
+            let typed = if m.shift { shifted(c) } else { c };
             self.type_text(&typed.to_string());
             return Ok(());
         }
