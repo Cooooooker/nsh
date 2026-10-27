@@ -16,3 +16,15 @@ test("the links of a sentence take their own presses", async () => {
   // The span's characters are not texts of their own.
   expect(app.texts().filter((t) => t === "Terms of service")).toEqual([]);
 });
+
+test("a link a truncated line hides takes no press, and its ellipsis none", async () => {
+  const app = await open("./fixtures/link-truncated.tsx");
+  // Only a platform that draws the app hides the link (a headless run
+  // draws nothing, and takes no screenshot).
+  if (!(await app.screenshot().then(() => true, () => false))) return;
+  // The link's characters are not drawn: the press finds none, or lands on
+  // the line's ellipsis, which belongs to no link.
+  await app.press("WWWWWWWW").catch(() => {});
+  await app.wait(200);
+  expect(app.shows("Hidden link pressed: 0")).toBe(true);
+});

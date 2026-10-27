@@ -282,6 +282,8 @@ pub(crate) struct Run {
     /// run and an index into `AttributedText::links` (the innermost).
     /// They stay in the run, whose shaping and bidi order they keep.
     pub(crate) links: Vec<(u32, u32, u16)>,
+    /// It ends with a truncated line's `…`, which belongs to no offset.
+    ellipsis: bool,
     /// What follows the run when the text is copied: the line's break (a
     /// newline, or the spaces a wrap dropped) after its last run.
     pub(crate) after: String,
@@ -839,6 +841,7 @@ impl TextEngine for WebTextEngine {
                     Some(r) if merge && r.style == style => {
                         let byte = r.text.len();
                         r.text.push_str(&text);
+                        r.ellipsis |= ellipsis;
                         (index.saturating_sub(1), byte)
                     }
                     _ => {
@@ -849,6 +852,7 @@ impl TextEngine for WebTextEngine {
                             style,
                             start: (!ellipsis).then_some(start),
                             links: Vec::new(),
+                            ellipsis,
                             after: String::new(),
                         });
                         (index, 0)
@@ -934,7 +938,11 @@ impl TextEngine for WebTextEngine {
         if !prepared.links.is_empty() {
             for run in &mut runs {
                 if let Some(start) = run.start {
-                    run.links = link_parts(&prepared.links, start, &run.text);
+                    let text = match run.ellipsis {
+                        true => run.text.strip_suffix('…').unwrap_or(&run.text),
+                        false => &run.text,
+                    };
+                    run.links = link_parts(&prepared.links, start, text);
                 }
             }
         }
