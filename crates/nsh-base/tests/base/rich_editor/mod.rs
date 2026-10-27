@@ -235,6 +235,33 @@ fn a_browser_elsewhere_takes_pc_keys() {
 }
 
 #[test]
+fn the_geometry_answers_outside_the_reactive_runtime() {
+    let editor = session(paragraphs(&["abc"]));
+    let shown = editor.clone();
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<Harness>(move || HarnessProps {
+            session: Some(shown.clone()),
+        }))
+    };
+    config.environment.os = Os::Linux;
+    config.environment.idiom = Idiom::Desktop;
+    let mut app = Headless::start(config).expect("the engine starts");
+    app.wait_for("text:Ready").unwrap();
+    // On the engine thread between turns, as JS asks from a timer.
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.engine()
+        .control()
+        .advance_clock(std::time::Duration::ZERO, move || {
+            let _ = tx.send(editor.coords_at_pos(2).map(|b| b.origin.x));
+        });
+    let x = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the engine answers");
+    assert!(x.is_some_and(|x| x > px(0.0)), "{x:?}");
+}
+
+#[test]
 fn a_press_places_the_caret() {
     let mut app = start(paragraphs(&["first", "second"]));
     app.type_text("id:editor", "").unwrap();
